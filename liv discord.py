@@ -1,25 +1,17 @@
 import discord
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
 import os
+import requests
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Discord bot token
+# Discord bot token and Hugging Face API token
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
 # Model name from Hugging Face repository
 model_name = "darko5723/liv_model"
-
-# Load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name)
-
-# Set up the device (GPU or CPU)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
 
 # Define intents
 intents = discord.Intents.default()
@@ -55,32 +47,35 @@ async def on_message(message):
         # Log the input being sent to the model
         print(f"Sending input to model: '{input_text}'")
 
-        # Get the message content and pass it to the model
-        inputs = tokenizer(input_text, return_tensors="pt").to(device)
+        # Set up headers for Hugging Face Inference API request
+        headers = {
+            "Authorization": f"Bearer {HF_API_TOKEN}"
+        }
 
-        # Adjust generation parameters for better conversational output
-        outputs = model.generate(
-            **inputs,
-             max_new_tokens=15,
-             min_length=7,
-             num_beams=1,
-             do_sample=True,
-             top_k=20,
-             temperature=0.2,
-             repetition_penalty=4.0,
-             pad_token_id=tokenizer.eos_token_id,
-             eos_token_id=tokenizer.eos_token_id
-            )
+        # Send request to Hugging Face Inference API
+        response = requests.post(
+            f"https://api-inference.huggingface.co/models/{model_name}",
+            headers=headers,
+            json={"inputs": input_text}
+        )
 
-        # Decode and send the response
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-        await message.channel.send(generated_text)
+        if response.status_code == 200:
+            generated_text = response.json().get('generated_text', '').strip()
+            if generated_text:
+                # Send the response back to Discord
+                await message.channel.send(generated_text)
+            else:
+                print("No valid response from model.")
+        else:
+            print(f"Failed to get a response from the model: {response.status_code} - {response.text}")
+            await message.channel.send("I'm having trouble processing that right now. Please try again later.")
 
     else:
         print(f"No matching command detected for message: '{message.content}'")
 
 # Run the bot
 client.run(DISCORD_TOKEN)
+
 
 
 
