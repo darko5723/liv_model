@@ -1,13 +1,38 @@
-from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
+import requests
+import os
+from dotenv import load_dotenv
 
-model_name = "darko5723/fine-tuned-liv-model"
+load_dotenv()
 
-print("Loading model...")
-model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"   # Change to 3B if too slow
 
-generator = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=100)
+print(f"Testing model: {MODEL_NAME}")
 
-print("Model loaded! Testing...")
-result = generator("Hello Liv, how are you today?", do_sample=True, temperature=0.7)
-print(result[0]["generated_text"])
+headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+
+payload = {
+    "model": MODEL_NAME,
+    "messages": [
+        {"role": "system", "content": "You are Liv from Punishing: Gray Raven. You are gentle, shy, and caring."},
+        {"role": "user", "content": "Hello Liv, how are you today?"}
+    ],
+    "max_tokens": 200,
+    "temperature": 0.75
+}
+
+response = requests.post(
+    f"https://api-inference.huggingface.co/models/{MODEL_NAME}",
+    headers=headers,
+    json=payload
+)
+
+if response.status_code == 200:
+    result = response.json()
+    print("\n✅ Model Response:")
+    if isinstance(result, list):
+        print(result[0].get("generated_text", "No text"))
+    else:
+        print(result.get("choices", [{}])[0].get("message", {}).get("content", "No content"))
+else:
+    print(f"❌ Error {response.status_code}: {response.text}")
