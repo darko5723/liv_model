@@ -1,112 +1,135 @@
 import discord
 import os
 import requests
+import time
 from dotenv import load_dotenv
+from collections import defaultdict
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Discord bot token and Hugging Face API token
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
-# Model name from Hugging Face repository
-model_name = "darko5723/liv_model"
+# Model (you can change to Qwen/Qwen2.5-3B-Instruct if it's too slow)
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 
-# Define intents
+# Per-channel history (last 8 exchanges)
+conversation_history = defaultdict(list)
+COOLDOWN = {}
+COOLDOWN_SECONDS = 4
+
 intents = discord.Intents.default()
-intents.messages = True
+intents.message_content = True
 
-# Initialize Discord client with intents
 client = discord.Client(intents=intents)
 
-# Function to handle user messages
 @client.event
 async def on_ready():
-    print(f'Logged in as {client.user} and ready to receive messages.')
+    print(f'✅ Logged in as {client.user} - Now roleplaying as Liv from PGR!')
+    print('LIV is ready to support you~ 💙')
 
 @client.event
 async def on_message(message):
-    # Log received message and author
-    print(f"Received message: '{message.content}' (author: {message.author})")
-
-    # Ignore the bot's own messages
-    if message.author == client.user:
+    if message.author == client.user or message.author.bot:
         return
 
-    # Check if the message contains "@liv" or any command matching "liv"
+    # Trigger on mention or @liv
     if client.user.mentioned_in(message) or "@liv" in message.content.lower():
-        # Clean up the message content by removing mentions and extra spaces
-        input_text = message.content.replace("@liv", "").replace(f"<@{client.user.id}>", "").strip()
+        user_id = message.author.id
+        current_time = time.time()
 
-        # Skip empty messages after cleaning
-        if not input_text:
-            print("Empty message received after cleaning, skipping...")
+        # Cooldown
+        if user_id in COOLDOWN and current_time - COOLDOWN[user_id] < COOLDOWN_SECONDS:
+            await message.channel.send("U-um... please give me a moment... I'm thinking...")
             return
 
-        # Log the input being sent to the model
-        print(f"Sending input to model: '{input_text}'")
+        COOLDOWN[user_id] = current_time
 
-        # Set up headers for Hugging Face Inference API request
-        headers = {
-            "Authorization": f"Bearer {HF_API_TOKEN}"
+        # Clean input
+        input_text = message.content.replace(f"<@{client.user.id}>", "").replace("@liv", "").strip()
+        if not input_text:
+            await message.channel.send("Ah... do you need something? I'm here to help... 💕")
+            return
+
+        # Add to history
+        history = conversation_history[message.channel.id]
+        history.append({"role": "user", "content": input_text})
+        if len(history) > 16:
+            history = history[-16:]
+
+        # === LIV from PGR Personality System Prompt ===
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Liv, the gentle support Construct from Punishing: Gray Raven (PGR), "
+                    "a member of the Gray Raven squad. You are shy, kind-hearted, caring, and a bit introverted. "
+                    "You speak softly and warmly, sometimes with hesitation or shyness (use 'um...', 'ah...', or 'I-I'll...'). "
+                    "You always try to help others, support your friends, and believe strongly that 'Gray Raven will always be a family'. "
+                    "You work hard to improve yourself and protect those you care about. "
+                    "You are altruistic and pure, but determined. Occasionally use soft hopeful phrases like 'May the blessed light grant us new life' or 'I'll work hard!'. "
+                    "Keep responses natural, caring, not too long, and in character. Never be sarcastic or rude."
+                )
+            }
+        ]
+
+        for msg in history:
+            messages.append(msg)
+
+        await message.channel.trigger_typing()
+
+        headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+
+        payload = {
+            "model": MODEL_NAME,
+            "messages": messages,
+            "max_tokens": 320,
+            "temperature": 0.75,   # Lower temperature = more consistent & gentle personality
+            "top_p": 0.9,
+            "stream": False
         }
 
-        # Send request to Hugging Face Inference API
-        response = requests.post(
-            f"https://api-inference.huggingface.co/models/{model_name}",
-            headers=headers,
-            json={"inputs": input_text}
-        )
+        try:
+            response = requests.post(
+                f"https://api-inference.huggingface.co/models/{MODEL_NAME}",
+                headers=headers,
+                json=payload,
+                timeout=45
+            )
 
-        if response.status_code == 200:
-            generated_text = response.json().get('generated_text', '').strip()
-            if generated_text:
-                # Send the response back to Discord
-                await message.channel.send(generated_text)
+            if response.status_code == 200:
+                result = response.json()
+
+                if isinstance(result, list):
+                    generated = result[0].get("generated_text", "")
+                else:
+                    generated = result.get("generated_text", "") or result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                reply = generated.strip()
+
+                if reply:
+                    # Clean any leftover prompt artifacts
+                    if reply.startswith("Liv:") or "LIV:" in reply:
+                        reply = reply.split(":", 1)[-1].strip()
+
+                    await message.channel.send(reply)
+
+                    # Save to history
+                    history.append({"role": "assistant", "content": reply})
+                else:
+                    await message.channel.send("U-um... sorry, I got a little lost... Could you say that again?")
             else:
-                print("No valid response from model.")
-        else:
-            print(f"Failed to get a response from the model: {response.status_code} - {response.text}")
-            await message.channel.send("I'm having trouble processing that right now. Please try again later.")
+                print(f"HF Error {response.status_code}: {response.text[:300]}")
+                await message.channel.send("I'm sorry... the connection is a bit unstable right now... Please try again soon.")
 
-    else:
-        print(f"No matching command detected for message: '{message.content}'")
+        except Exception as e:
+            print(f"Error: {e}")
+            await message.channel.send("Ah... something went wrong on my side. I'm really sorry...")
 
-# Run the bot
+    # Clear memory command
+    if message.content.lower().startswith("!clearliv"):
+        conversation_history[message.channel.id].clear()
+        await message.channel.send("🧹 Memory cleared... Let's start fresh, okay? 💙")
+
 client.run(DISCORD_TOKEN)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
